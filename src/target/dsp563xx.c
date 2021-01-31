@@ -29,6 +29,8 @@
 #include "register.h"
 #include "dsp563xx.h"
 #include "dsp563xx_once.h"
+#include <helper/time_support.h>
+#include "image.h"
 
 #define ASM_REG_W_R0    0x60F400
 #define ASM_REG_W_R1    0x61F400
@@ -1682,7 +1684,7 @@ static int dsp563xx_read_buffer_default(struct target *target,
 	uint8_t *buffer)
 {
 
-	return dsp563xx_read_memory(target, dsp563xx_get_default_memory(), address, size, 0,
+	return dsp563xx_read_memory(target, dsp563xx_get_default_memory(), address, 0, size,
 			buffer);
 }
 
@@ -1854,7 +1856,7 @@ static int dsp563xx_write_buffer_default(struct target *target,
 	uint32_t size,
 	const uint8_t *buffer)
 {
-	return dsp563xx_write_memory(target, dsp563xx_get_default_memory(), address, size, 0,
+	return dsp563xx_write_memory(target, dsp563xx_get_default_memory(), address, 0, size,
 			buffer);
 }
 
@@ -2171,6 +2173,69 @@ COMMAND_HANDLER(dsp563xx_mem_command)
 	return err;
 }
 
+COMMAND_HANDLER(dsp563xx_dump_image_command)
+{
+        struct fileio *fileio;
+        uint8_t *buffer;
+        int retval, retvaltemp;
+        target_addr_t address, size;
+        struct duration bench;
+        struct target *target = get_current_target(CMD_CTX);
+
+        if (CMD_ARGC != 3)
+                return ERROR_COMMAND_SYNTAX_ERROR;
+
+        COMMAND_PARSE_ADDRESS(CMD_ARGV[1], address);
+        COMMAND_PARSE_ADDRESS(CMD_ARGV[2], size);
+
+        uint32_t buf_size = (size > 4096) ? 4096: size;
+        buffer = malloc(buf_size);
+        if (!buffer)
+                return ERROR_FAIL;
+
+        retval = fileio_open(&fileio, CMD_ARGV[0], FILEIO_WRITE, FILEIO_BINARY);
+        if (retval != ERROR_OK) {
+                free(buffer);
+                return retval;
+        }
+
+        duration_start(&bench);
+
+        while (size > 0) {
+                size_t size_written;
+                uint32_t this_run_size = (size > buf_size) ? buf_size : size;
+                retval = target_read_buffer(target, address, this_run_size, buffer);
+                if (retval != ERROR_OK)
+                        break;
+
+                retval = fileio_write(fileio, this_run_size, buffer, &size_written);
+                if (retval != ERROR_OK)
+                        break;
+
+                size -= this_run_size;
+                address += this_run_size / 4;
+        }
+
+        free(buffer);
+
+        if ((ERROR_OK == retval) && (duration_measure(&bench) == ERROR_OK)) {
+                size_t filesize;
+                retval = fileio_size(fileio, &filesize);
+                if (retval != ERROR_OK)
+                        return retval;
+                command_print(CMD,
+                                "dumped %zu bytes in %fs (%0.3f KiB/s)", filesize,
+                                duration_elapsed(&bench), duration_kbps(&bench, filesize));
+        }
+
+        retvaltemp = fileio_close(fileio);
+        if (retvaltemp != ERROR_OK)
+                return retvaltemp;
+
+        return retval;
+}
+
+
 static const struct command_registration dsp563xx_command_handlers[] = {
 	{
 		.name = "mwwx",
@@ -2245,6 +2310,12 @@ static const struct command_registration dsp563xx_command_handlers[] = {
 		.help = "remove watchpoint custom",
 		.usage = " ",
 	},
+        {
+                .name = "dump_image",
+                .handler = dsp563xx_dump_image_command,
+                .mode = COMMAND_EXEC,
+                .usage = "filename address size",
+        },
 	COMMAND_REGISTRATION_DONE
 };
 
@@ -2281,4 +2352,5 @@ struct target_type dsp563xx_target = {
 	.target_create = dsp563xx_target_create,
 	.init_target = dsp563xx_init_target,
 	.examine = dsp563xx_examine,
+
 };
